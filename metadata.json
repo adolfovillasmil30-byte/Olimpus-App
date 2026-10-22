@@ -1,0 +1,6 @@
+{
+  "name": "FitStreak - Gym, Racha & Nutrición",
+  "description": "App fitness móvil con seguimiento de asistencia al gym, racha estilo TikTok, rutinas con cronómetro de descanso, registro de comidas con foto y gráficas de peso y medidas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
