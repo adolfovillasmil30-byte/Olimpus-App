@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Users collection rules
+    match /users/{userId} {
+      // User can read their own profile
+      allow get: if request.auth != null && request.auth.uid == userId;
+      
+      // User can create their initial profile upon registration
+      allow create: if request.auth != null 
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.status in ['trial', 'active', 'suspended']
+        && request.resource.data.role in ['user', 'admin'];
+
+      // User can update their status (e.g. transitioning from trial to suspended when trial expires)
+      allow update: if request.auth != null 
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId;
+        
+      allow delete: if false;
+    }
+  }
+}
