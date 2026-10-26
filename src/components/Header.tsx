@@ -24,14 +24,9 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header
-      className={`w-full bg-[#090d16]/95 backdrop-blur-xl border-b border-slate-800/80 px-4 pb-3 select-none transition-all ${
-        isPhoneFrame ? 'pt-4 sm:pt-4' : 'pt-6 sm:pt-7'
+      className={`w-full bg-[#090d16]/95 backdrop-blur-xl border-b border-slate-800/80 px-4 pb-3 select-none transition-all ios-header-safe pt-12 sm:pt-3.5 ${
+        isPhoneFrame ? 'simulated-frame' : ''
       }`}
-      style={
-        !isPhoneFrame
-          ? { paddingTop: 'max(1.75rem, calc(env(safe-area-inset-top, 0px) + 1.25rem))' }
-          : undefined
-      }
     >
       <div className="flex items-center justify-between max-w-md mx-auto">
         {/* Logo and Brand */}

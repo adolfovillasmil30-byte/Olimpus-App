@@ -1,29 +1,61 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny
+    // Default deny all access
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Users collection rules
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Users collection and subcollections (strictly isolated per user)
     match /users/{userId} {
-      // User can read their own profile
-      allow get: if request.auth != null && request.auth.uid == userId;
+      // User profile
+      allow get: if isOwner(userId);
       
-      // User can create their initial profile upon registration
-      allow create: if request.auth != null 
-        && request.auth.uid == userId
+      // Initial profile creation upon registration
+      allow create: if isOwner(userId)
         && request.resource.data.uid == userId
         && request.resource.data.status in ['trial', 'active', 'suspended']
         && request.resource.data.role in ['user', 'admin'];
 
-      // User can update their status (e.g. transitioning from trial to suspended when trial expires)
-      allow update: if request.auth != null 
-        && request.auth.uid == userId
+      // User status updates (e.g. trial expiration update)
+      allow update: if isOwner(userId)
         && request.resource.data.uid == userId;
         
       allow delete: if false;
+
+      // Workouts subcollection: users/{userId}/workouts/{workoutId}
+      match /workouts/{workoutId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Attendance subcollection: users/{userId}/attendance/{attendanceId}
+      match /attendance/{attendanceId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Meals subcollection: users/{userId}/meals/{mealId}
+      match /meals/{mealId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Progress subcollection: users/{userId}/progress/{progressId}
+      match /progress/{progressId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Catch-all for any user-scoped subcollections
+      match /{allSubcollections=**} {
+        allow read, write: if isOwner(userId);
+      }
     }
   }
 }

@@ -274,9 +274,10 @@ export function checkAndTriggerScheduledReminders() {
 }
 
 // Storage helpers
-export function loadNotifSettings(): NotificationSettings {
+export function loadNotifSettings(uid?: string): NotificationSettings {
   try {
-    const raw = localStorage.getItem(NOTIF_SETTINGS_KEY);
+    const key = uid ? `olimpus_${uid}_notif_settings` : NOTIF_SETTINGS_KEY;
+    const raw = localStorage.getItem(key);
     if (raw) return JSON.parse(raw);
   } catch (e) {
     console.warn('Error reading notification settings', e);
@@ -284,11 +285,13 @@ export function loadNotifSettings(): NotificationSettings {
   return DEFAULT_NOTIF_SETTINGS;
 }
 
-export function saveNotifSettings(settings: NotificationSettings) {
+export function saveNotifSettings(settings: NotificationSettings, uid?: string) {
   try {
-    localStorage.setItem(NOTIF_SETTINGS_KEY, JSON.stringify(settings));
+    const key = uid ? `olimpus_${uid}_notif_settings` : NOTIF_SETTINGS_KEY;
+    localStorage.setItem(key, JSON.stringify(settings));
     syncScheduledGymReminder(settings);
   } catch (e) {
     console.warn('Error saving notification settings', e);
   }
 }
+

@@ -8,6 +8,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { clearAllLocalUserData } from '../services/userDataService';
 
 export interface UserProfile {
   uid: string;
@@ -227,6 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem(`${CACHE_PREFIX}${user.uid}`);
         localStorage.removeItem(`${CACHE_TIME_PREFIX}${user.uid}`);
       }
+      clearAllLocalUserData();
       await signOut(auth);
       setUser(null);
       setUserProfile(null);

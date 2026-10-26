@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { AnimatePresence } from 'framer-motion';
 import {
   Utensils,
   Plus,
@@ -6,14 +7,22 @@ import {
   Image as ImageIcon,
   Flame,
   PieChart,
+  BarChart2,
   Trash2,
   X,
   Target,
   Sparkles,
   ChevronDown,
+  Loader2,
+  CheckCircle2,
+  Zap,
 } from 'lucide-react';
 import { Meal, NutritionGoal } from '../types';
 import { formatDateKey } from '../utils/storage';
+import { useAuth } from '../context/AuthContext';
+import { compressFoodImage } from '../utils/imageCompressor';
+import { uploadFoodPhoto } from '../services/foodPhotoService';
+import { MealNutritionModal } from './MealNutritionModal';
 
 interface NutritionViewProps {
   meals: Meal[];
@@ -30,6 +39,7 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
   onDeleteMeal,
   onUpdateGoal,
 }) => {
+  const { user } = useAuth();
   const todayKey = formatDateKey();
   const todayMeals = meals.filter((m) => m.date === todayKey);
 
@@ -37,6 +47,7 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
   const [expandedPhoto, setExpandedPhoto] = useState<string | null>(null);
+  const [selectedMealForAnalysis, setSelectedMealForAnalysis] = useState<Meal | null>(null);
 
   // Add meal form fields
   const [mealType, setMealType] = useState<Meal['type']>('almuerzo');
@@ -46,6 +57,17 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
   const [carbs, setCarbs] = useState<number | ''>('');
   const [fat, setFat] = useState<number | ''>('');
   const [photoPreview, setPhotoPreview] = useState<string>('');
+
+  // Client-side photo compression & upload states
+  const [compressedBlob, setCompressedBlob] = useState<Blob | null>(null);
+  const [compressionStats, setCompressionStats] = useState<{
+    sizeKb: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
   // Goal form fields
   const [tempGoalCal, setTempGoalCal] = useState(goal.calories);
@@ -64,15 +86,47 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
   const remainingCalories = Math.max(0, goal.calories - totalCalories);
   const caloriePercent = Math.min(100, Math.round((totalCalories / goal.calories) * 100));
 
-  // Handle Photo selection from camera or gallery
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle Photo selection from camera or gallery with HTML5 Canvas compression
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (!file) return;
+
+    try {
+      setIsCompressing(true);
+      setStatusNotice(null);
+
+      // Client-side compression to max 800px and strictly < 150 KB
+      const result = await compressFoodImage(file, 'image/jpeg');
+
+      setCompressedBlob(result.blob);
+      setCompressionStats({
+        sizeKb: result.sizeKb,
+        width: result.width,
+        height: result.height,
+      });
+      // Instant preview from compressed blob
+      setPhotoPreview(result.dataUrl);
+    } catch (err) {
+      console.warn('Fallo en compresión de imagen, usando lectura estándar:', err);
       const reader = new FileReader();
       reader.onloadend = () => {
         setPhotoPreview(reader.result as string);
+        setCompressedBlob(file);
+        setCompressionStats(null);
       };
       reader.readAsDataURL(file);
+    } finally {
+      setIsCompressing(false);
+    }
+  };
+
+  const handleClearPhoto = () => {
+    setPhotoPreview('');
+    setCompressedBlob(null);
+    setCompressionStats(null);
+    setStatusNotice(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -84,28 +138,70 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
     setCarbs('');
     setFat('');
     setPhotoPreview('');
+    setCompressedBlob(null);
+    setCompressionStats(null);
+    setStatusNotice(null);
+    setIsSaving(false);
+    setIsCompressing(false);
     setIsAddModalOpen(true);
   };
 
-  const handleSaveMeal = (e: React.FormEvent) => {
+  const handleSaveMeal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mealName.trim()) return;
+    if (!mealName.trim() || isSaving) return;
 
-    const newMeal: Meal = {
-      id: `meal-${Date.now()}`,
-      date: todayKey,
-      type: mealType,
-      name: mealName.trim(),
-      calories: Number(calories) || 0,
-      protein: Number(protein) || 0,
-      carbs: Number(carbs) || 0,
-      fat: Number(fat) || 0,
-      photoUrl: photoPreview || undefined,
-      time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-    };
+    setIsSaving(true);
+    const mealId = `meal-${Date.now()}`;
+    let finalPhotoUrl = photoPreview || undefined;
 
-    onAddMeal(newMeal);
-    setIsAddModalOpen(false);
+    try {
+      // If user is authenticated and has selected a compressed image, upload to Storage
+      if (user && compressedBlob) {
+        setStatusNotice('Subiendo foto a Firebase Storage...');
+        const storageUrl = await uploadFoodPhoto(user.uid, mealId, compressedBlob);
+        if (storageUrl) {
+          finalPhotoUrl = storageUrl;
+        } else {
+          // Offline / network failure: gracefully keep local compressed base64 preview
+          console.info('No se pudo subir a la nube (offline o error de red). Guardando copia local de la foto.');
+        }
+      }
+
+      const newMeal: Meal = {
+        id: mealId,
+        date: todayKey,
+        type: mealType,
+        name: mealName.trim(),
+        calories: Number(calories) || 0,
+        protein: Number(protein) || 0,
+        carbs: Number(carbs) || 0,
+        fat: Number(fat) || 0,
+        photoUrl: finalPhotoUrl,
+        time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      onAddMeal(newMeal);
+      setIsAddModalOpen(false);
+    } catch (err) {
+      console.error('Error al guardar comida con foto:', err);
+      // Fallback: save meal record even if photo processing had an unexpected glitch
+      const fallbackMeal: Meal = {
+        id: mealId,
+        date: todayKey,
+        type: mealType,
+        name: mealName.trim(),
+        calories: Number(calories) || 0,
+        protein: Number(protein) || 0,
+        carbs: Number(carbs) || 0,
+        fat: Number(fat) || 0,
+        photoUrl: photoPreview || undefined,
+        time: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+      };
+      onAddMeal(fallbackMeal);
+      setIsAddModalOpen(false);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleSaveGoal = (e: React.FormEvent) => {
@@ -304,12 +400,16 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
                   {categoryMeals.map((meal) => (
                     <div
                       key={meal.id}
-                      className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-3 flex items-center gap-3 group"
+                      onClick={() => setSelectedMealForAnalysis(meal)}
+                      className="bg-slate-950/70 hover:bg-slate-950/95 border border-slate-800/80 hover:border-orange-500/50 rounded-2xl p-3 flex items-center gap-3 group cursor-pointer transition-all shadow-sm hover:shadow-lg hover:shadow-orange-500/5"
                     >
                       {/* Photo Thumbnail or Placeholder */}
                       {meal.photoUrl ? (
                         <div
-                          onClick={() => setExpandedPhoto(meal.photoUrl || null)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedMealForAnalysis(meal);
+                          }}
                           className="w-16 h-16 rounded-xl overflow-hidden shrink-0 cursor-pointer relative group/img border border-slate-700/60 shadow-md"
                         >
                           <img
@@ -320,7 +420,7 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
                           <div className="absolute inset-0 bg-black/20 group-hover/img:bg-black/0 transition-colors" />
                         </div>
                       ) : (
-                        <div className="w-16 h-16 rounded-xl bg-slate-800/60 border border-slate-800 flex items-center justify-center shrink-0 text-slate-500">
+                        <div className="w-16 h-16 rounded-xl bg-slate-800/60 border border-slate-800 flex items-center justify-center shrink-0 text-slate-500 group-hover:text-orange-400 group-hover:border-orange-500/30 transition-colors">
                           <ImageIcon className="w-6 h-6 stroke-[1.5]" />
                         </div>
                       )}
@@ -328,9 +428,14 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
                       {/* Meal info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
-                          <h4 className="font-bold text-white text-sm truncate">{meal.name}</h4>
+                          <h4 className="font-bold text-white text-sm truncate group-hover:text-orange-300 transition-colors">
+                            {meal.name}
+                          </h4>
                           <button
-                            onClick={() => onDeleteMeal(meal.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteMeal(meal.id);
+                            }}
                             className="p-1 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors opacity-70 group-hover:opacity-100"
                             title="Eliminar plato"
                           >
@@ -343,6 +448,10 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
                             {meal.calories} kcal
                           </span>
                           <span className="text-[11px] text-slate-400">• {meal.time}</span>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-850 px-1.5 py-0.5 rounded-md group-hover:text-orange-400 group-hover:bg-orange-500/10 transition-colors flex items-center gap-1 ml-auto border border-slate-800 group-hover:border-orange-500/20">
+                            <BarChart2 className="w-2.5 h-2.5 text-orange-400" />
+                            <span>Ver impacto</span>
+                          </span>
                         </div>
 
                         {/* Macros small tags */}
@@ -462,35 +571,83 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
                   className="hidden"
                 />
 
-                {photoPreview ? (
-                  <div className="relative rounded-2xl overflow-hidden border border-slate-700 h-40 group">
-                    <img src={photoPreview} alt="Preview" className="w-full h-full object-cover" />
+                {isCompressing ? (
+                  <div className="w-full py-8 px-4 rounded-2xl bg-slate-950/70 border border-orange-500/40 flex flex-col items-center justify-center gap-2.5 text-center">
+                    <Loader2 className="w-7 h-7 text-orange-400 animate-spin" />
+                    <div>
+                      <p className="text-xs font-bold text-white">Comprimiendo foto en Canvas...</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Redimensionando a máx 800px y garantizando menos de 150 KB
+                      </p>
+                    </div>
+                  </div>
+                ) : photoPreview ? (
+                  <div className="relative rounded-2xl overflow-hidden border border-slate-700 h-48 group bg-slate-950">
+                    <img
+                      src={photoPreview}
+                      alt="Vista previa de comida"
+                      className="w-full h-full object-cover"
+                    />
+
+                    {/* Gradient overlay for readability */}
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/60 pointer-events-none" />
+
+                    {/* Top Stats Tag */}
+                    <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/75 backdrop-blur-md border border-white/10 text-[10px] font-bold text-white">
+                      <Zap className="w-3 h-3 text-amber-400 fill-amber-400" />
+                      <span>
+                        {compressionStats
+                          ? `${compressionStats.sizeKb} KB • ${compressionStats.width}×${compressionStats.height}px`
+                          : '< 150 KB (Comprimida)'}
+                      </span>
+                      <span className="text-emerald-400 font-extrabold">• Capa Gratis</span>
+                    </div>
+
+                    {/* Remove photo button */}
                     <button
                       type="button"
-                      onClick={() => setPhotoPreview('')}
-                      className="absolute top-2 right-2 p-1.5 bg-black/70 hover:bg-black text-white rounded-full transition-colors"
+                      onClick={handleClearPhoto}
+                      disabled={isSaving}
+                      className="absolute top-2.5 right-2.5 p-1.5 bg-black/75 hover:bg-red-500/80 text-white rounded-full transition-colors backdrop-blur-md"
+                      title="Quitar foto"
                     >
                       <X className="w-4 h-4" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="absolute bottom-2 right-2 px-3 py-1.5 bg-black/70 hover:bg-black text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5"
-                    >
-                      <Camera className="w-3.5 h-3.5" /> Cambiar Foto
-                    </button>
+
+                    {/* Bottom action controls */}
+                    <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between">
+                      <span className="text-[10px] text-slate-300 font-medium bg-black/60 px-2 py-0.5 rounded-lg backdrop-blur-sm">
+                        ✓ Vista previa lista
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isSaving}
+                        className="px-3 py-1.5 bg-slate-900/90 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 border border-slate-700/80 shadow-md backdrop-blur-sm"
+                      >
+                        <Camera className="w-3.5 h-3.5 text-orange-400" />
+                        <span>Cambiar</span>
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full py-5 border-2 border-dashed border-slate-800 hover:border-orange-500/60 rounded-2xl flex flex-col items-center justify-center gap-1.5 text-slate-400 hover:text-orange-400 transition-colors bg-slate-950/40 group"
+                    disabled={isSaving}
+                    className="w-full py-5 border-2 border-dashed border-slate-800 hover:border-orange-500/60 rounded-2xl flex flex-col items-center justify-center gap-2 text-slate-400 hover:text-orange-400 transition-colors bg-slate-950/40 group cursor-pointer"
                   >
-                    <div className="w-10 h-10 rounded-full bg-slate-900 flex items-center justify-center group-hover:scale-110 transition-transform">
+                    <div className="w-11 h-11 rounded-full bg-slate-900 flex items-center justify-center group-hover:scale-110 transition-transform border border-slate-800 shadow-inner">
                       <Camera className="w-5 h-5 text-orange-400 stroke-[2]" />
                     </div>
-                    <span className="text-xs font-bold text-slate-300">Tomar foto o subir de tu galería</span>
-                    <span className="text-[10px] text-slate-500">JPG, PNG o WEBP (opcional)</span>
+                    <div className="text-center">
+                      <span className="text-xs font-bold text-slate-300 block">
+                        Tomar foto o subir de tu galería
+                      </span>
+                      <span className="text-[10px] text-slate-500 block mt-0.5">
+                        Compresión automática a máx 800px y menos de 150 KB (Capa Gratis)
+                      </span>
+                    </div>
                   </button>
                 )}
               </div>
@@ -551,21 +708,40 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
                 </div>
               </div>
 
+              {/* Status Notice if saving or uploading */}
+              {statusNotice && (
+                <div className="flex items-center gap-2 p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20 text-xs text-orange-300">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-orange-400" />
+                  <span>{statusNotice}</span>
+                </div>
+              )}
+
               {/* Submit Buttons */}
               <div className="pt-2 flex items-center gap-3">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="flex-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition-colors"
+                  disabled={isSaving}
+                  className="flex-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-sm font-bold transition-colors"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 hover:opacity-95 text-white text-sm font-bold transition-all shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
+                  disabled={isSaving || isCompressing}
+                  className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 hover:opacity-95 disabled:opacity-60 text-white text-sm font-bold transition-all shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
                 >
-                  <Plus className="w-4 h-4" />
-                  <span>Guardar Comida</span>
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Guardando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      <span>Guardar Comida</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -663,6 +839,21 @@ export const NutritionView: React.FC<NutritionViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* INDIVIDUAL MEAL NUTRITION & IMPACT ANALYSIS MODAL */}
+      <AnimatePresence>
+        {selectedMealForAnalysis && (
+          <MealNutritionModal
+            key={selectedMealForAnalysis.id}
+            meal={selectedMealForAnalysis}
+            dailyGoal={goal}
+            onClose={() => setSelectedMealForAnalysis(null)}
+            onDelete={onDeleteMeal}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };
+
+

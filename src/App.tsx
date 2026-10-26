@@ -13,19 +13,30 @@ import {
   StreakStats,
 } from './types';
 import {
-  loadWorkouts,
-  saveWorkouts,
-  loadAttendance,
-  saveAttendance,
-  loadMeals,
-  saveMeals,
-  loadGoal,
-  saveGoal,
-  loadProgress,
-  saveProgress,
+  DEFAULT_WORKOUTS,
+  DEFAULT_GOAL,
+  getInitialAttendance,
+  getInitialMeals,
+  getInitialProgress,
   calculateStreak,
   formatDateKey,
 } from './utils/storage';
+import {
+  fetchUserWorkouts,
+  saveUserWorkouts,
+  fetchUserAttendance,
+  saveUserAttendanceRecord,
+  syncAllUserAttendance,
+  fetchUserMealsAndGoal,
+  saveUserMeals,
+  deleteUserMeal,
+  saveUserGoal,
+  fetchUserProgress,
+  saveUserProgress,
+  deleteUserProgressRecord,
+  getStorageKey,
+} from './services/userDataService';
+import { deleteFoodPhoto } from './services/foodPhotoService';
 import { Header } from './components/Header';
 import { BottomNav, NavTab } from './components/BottomNav';
 import { DashboardView } from './components/DashboardView';
@@ -37,9 +48,9 @@ import { RestTimerModal } from './components/RestTimerModal';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal';
 import {
   NotificationSettings,
+  DEFAULT_NOTIF_SETTINGS,
   loadNotifSettings,
   saveNotifSettings,
-  sendMotivationalNotification,
   registerServiceWorker,
   syncScheduledGymReminder,
   checkAndTriggerScheduledReminders,
@@ -53,12 +64,15 @@ import { Flame } from 'lucide-react';
 function AppContent() {
   const { user, userProfile, loading, isTrialExpired } = useAuth();
 
-  // State initialization from persistent storage
-  const [workouts, setWorkouts] = useState<DayWorkout[]>(loadWorkouts);
-  const [attendance, setAttendance] = useState<Record<string, AttendanceRecord>>(loadAttendance);
-  const [meals, setMeals] = useState<Meal[]>(loadMeals);
-  const [goal, setGoal] = useState<NutritionGoal>(loadGoal);
-  const [progress, setProgress] = useState<BodyMeasurement[]>(loadProgress);
+  // State initialization strictly isolated per user
+  const [workouts, setWorkouts] = useState<DayWorkout[]>(DEFAULT_WORKOUTS);
+  const [attendance, setAttendance] = useState<Record<string, AttendanceRecord>>(getInitialAttendance);
+  const [meals, setMeals] = useState<Meal[]>(getInitialMeals);
+  const [goal, setGoal] = useState<NutritionGoal>(DEFAULT_GOAL);
+  const [progress, setProgress] = useState<BodyMeasurement[]>(getInitialProgress);
+
+  // Tracks whether current user's data has finished loading from Firestore/cache
+  const [isDataLoaded, setIsDataLoaded] = useState<boolean>(false);
 
   // App navigation state
   const [currentTab, setCurrentTab] = useState<NavTab>('inicio');
@@ -68,40 +82,129 @@ function AppContent() {
 
   // Notifications state
   const [isNotifModalOpen, setIsNotifModalOpen] = useState<boolean>(false);
-  const [notifSettings, setNotifSettings] = useState<NotificationSettings>(loadNotifSettings);
+  const [notifSettings, setNotifSettings] = useState<NotificationSettings>(DEFAULT_NOTIF_SETTINGS);
 
   // Rest Timer state
   const [isTimerOpen, setIsTimerOpen] = useState<boolean>(false);
   const [timerSeconds, setTimerSeconds] = useState<number>(60);
   const [timerExerciseName, setTimerExerciseName] = useState<string>('');
 
-  // Streak Stats
+  // Streak Stats derived strictly from current user's attendance
   const streakStats: StreakStats = calculateStreak(attendance);
 
-  // Auto-save listeners
+  // --------------------------------------------------------------------------
+  // USER LIFECYCLE: Fetch from Firestore & Scoped Cache when user changes
+  // --------------------------------------------------------------------------
   useEffect(() => {
-    saveWorkouts(workouts);
-  }, [workouts]);
+    // If no user is logged in, reset state completely to virgin defaults and abort
+    if (!user) {
+      setWorkouts(DEFAULT_WORKOUTS);
+      setAttendance(getInitialAttendance());
+      setMeals(getInitialMeals());
+      setGoal(DEFAULT_GOAL);
+      setProgress(getInitialProgress());
+      setNotifSettings(DEFAULT_NOTIF_SETTINGS);
+      setIsDataLoaded(false);
+      return;
+    }
+
+    let isCurrent = true;
+    const uid = user.uid;
+
+    // 1. Immediately hydrate from user's local cache if available (instant zero-lag UI)
+    try {
+      const cachedWorkouts = localStorage.getItem(getStorageKey(uid, 'workouts'));
+      if (cachedWorkouts) setWorkouts(JSON.parse(cachedWorkouts));
+
+      const cachedAttendance = localStorage.getItem(getStorageKey(uid, 'attendance'));
+      if (cachedAttendance) setAttendance(JSON.parse(cachedAttendance));
+
+      const cachedMeals = localStorage.getItem(getStorageKey(uid, 'meals'));
+      if (cachedMeals) setMeals(JSON.parse(cachedMeals));
+
+      const cachedGoal = localStorage.getItem(getStorageKey(uid, 'goal'));
+      if (cachedGoal) setGoal(JSON.parse(cachedGoal));
+
+      const cachedProgress = localStorage.getItem(getStorageKey(uid, 'progress'));
+      if (cachedProgress) setProgress(JSON.parse(cachedProgress));
+
+      setNotifSettings(loadNotifSettings(uid));
+    } catch (e) {
+      console.warn('Error reading local cache for user', e);
+    }
+
+    // 2. Fetch fresh data from Firestore subcollections for this specific user
+    async function loadUserData() {
+      try {
+        const [userWorkouts, userAttendance, { meals: userMeals, goal: userGoal }, userProgress] =
+          await Promise.all([
+            fetchUserWorkouts(uid),
+            fetchUserAttendance(uid),
+            fetchUserMealsAndGoal(uid),
+            fetchUserProgress(uid),
+          ]);
+
+        if (isCurrent) {
+          setWorkouts(userWorkouts);
+          setAttendance(userAttendance);
+          setMeals(userMeals);
+          setGoal(userGoal);
+          setProgress(userProgress);
+          setIsDataLoaded(true);
+        }
+      } catch (err) {
+        console.error('Error fetching user subcollections from Firestore:', err);
+        if (isCurrent) {
+          setIsDataLoaded(true);
+        }
+      }
+    }
+
+    loadUserData();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [user?.uid]);
+
+  // --------------------------------------------------------------------------
+  // AUTO-SAVE: Write changes to Firestore & user-scoped cache
+  // --------------------------------------------------------------------------
+  useEffect(() => {
+    if (user && isDataLoaded) {
+      saveUserWorkouts(user.uid, workouts);
+    }
+  }, [workouts, user?.uid, isDataLoaded]);
 
   useEffect(() => {
-    saveAttendance(attendance);
-  }, [attendance]);
+    if (user && isDataLoaded) {
+      syncAllUserAttendance(user.uid, attendance);
+    }
+  }, [attendance, user?.uid, isDataLoaded]);
 
   useEffect(() => {
-    saveMeals(meals);
-  }, [meals]);
+    if (user && isDataLoaded) {
+      saveUserMeals(user.uid, meals);
+    }
+  }, [meals, user?.uid, isDataLoaded]);
 
   useEffect(() => {
-    saveGoal(goal);
-  }, [goal]);
+    if (user && isDataLoaded) {
+      saveUserGoal(user.uid, goal);
+    }
+  }, [goal, user?.uid, isDataLoaded]);
 
   useEffect(() => {
-    saveProgress(progress);
-  }, [progress]);
+    if (user && isDataLoaded) {
+      saveUserProgress(user.uid, progress);
+    }
+  }, [progress, user?.uid, isDataLoaded]);
 
   useEffect(() => {
-    saveNotifSettings(notifSettings);
-  }, [notifSettings]);
+    if (user) {
+      saveNotifSettings(notifSettings, user.uid);
+    }
+  }, [notifSettings, user?.uid]);
 
   // Register Service Worker and set up background alarm / scheduled reminders
   useEffect(() => {
@@ -138,25 +241,35 @@ function AppContent() {
       return;
     }
 
-    setAttendance((prev) => {
-      const existing = prev[dateKey];
-      const newAttendance = { ...prev };
+    const isCurrentlyAttended = attendance[dateKey]?.attended;
 
-      if (existing?.attended) {
-        // Toggle off
-        delete newAttendance[dateKey];
-      } else {
-        // Toggle on
-        newAttendance[dateKey] = {
-          date: dateKey,
-          attended: true,
-          workoutName: workoutName || 'Entrenamiento en el Gym',
-          durationMinutes: 60,
-          timestamp: new Date().toISOString(),
-        };
+    if (isCurrentlyAttended) {
+      // Toggle off
+      setAttendance((prev) => {
+        const next = { ...prev };
+        delete next[dateKey];
+        return next;
+      });
+      if (user) {
+        saveUserAttendanceRecord(user.uid, dateKey, null);
       }
-      return newAttendance;
-    });
+    } else {
+      // Toggle on
+      const newRecord: AttendanceRecord = {
+        date: dateKey,
+        attended: true,
+        workoutName: workoutName || 'Entrenamiento en el Gym',
+        durationMinutes: 60,
+        timestamp: new Date().toISOString(),
+      };
+      setAttendance((prev) => ({
+        ...prev,
+        [dateKey]: newRecord,
+      }));
+      if (user) {
+        saveUserAttendanceRecord(user.uid, dateKey, newRecord);
+      }
+    }
   };
 
   // Launch rest timer from exercise
@@ -173,12 +286,15 @@ function AppContent() {
 
   const handleDeleteMeal = (mealId: string) => {
     setMeals((prev) => prev.filter((m) => m.id !== mealId));
+    if (user) {
+      deleteUserMeal(user.uid, mealId);
+      deleteFoodPhoto(user.uid, mealId);
+    }
   };
 
   // Progress measurement handlers
   const handleAddMeasurement = (newEntry: BodyMeasurement) => {
     setProgress((prev) => {
-      // replace if same date or append
       const filtered = prev.filter((p) => p.date !== newEntry.date);
       return [...filtered, newEntry];
     });
@@ -186,6 +302,9 @@ function AppContent() {
 
   const handleDeleteMeasurement = (id: string) => {
     setProgress((prev) => prev.filter((p) => p.id !== id));
+    if (user) {
+      deleteUserProgressRecord(user.uid, id);
+    }
   };
 
   // Authentication & Subscription Access Control
@@ -225,9 +344,6 @@ function AppContent() {
       >
         {/* Fixed / Sticky Top Header Region (stays fixed when scrolling) */}
         <div className="sticky top-0 z-30 w-full bg-[#090d16]">
-          {/* Trial period notification banner (Top of screen) */}
-          <TrialBanner />
-
           {/* Dynamic Island / Mobile Phone Notch Simulation (only on desktop phone frame) */}
           {isPhoneFrame && (
             <div className="hidden sm:flex items-center justify-between px-6 pt-6 pb-2 select-none text-[11px] font-semibold text-slate-400">
@@ -252,6 +368,9 @@ function AppContent() {
             isPhoneFrame={isPhoneFrame}
             onTogglePhoneFrame={() => setIsPhoneFrame(!isPhoneFrame)}
           />
+
+          {/* Trial period notification banner (Top of screen, under Header) */}
+          <TrialBanner />
         </div>
 
         {/* Tab Content Router */}

@@ -13,12 +13,95 @@
         "trialEndDate": { "type": "number", "description": "Trial expiration timestamp in ms" }
       },
       "required": ["uid", "email", "role", "status", "createdAt", "trialEndDate"]
+    },
+    "Workout": {
+      "title": "Workout",
+      "description": "User workout day routine and exercises",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Workout ID" },
+        "dayOfWeek": { "type": "number", "description": "Day of the week 0-6" },
+        "dayName": { "type": "string", "description": "Name of the day" },
+        "workoutName": { "type": "string", "description": "Workout name" },
+        "focusMuscles": { "type": "array", "description": "Target muscle groups" },
+        "exercises": { "type": "array", "description": "List of exercises for this day" },
+        "notes": { "type": "string", "description": "Optional notes" },
+        "isRestDay": { "type": "boolean", "description": "Whether this is a rest day" }
+      },
+      "required": ["id", "dayOfWeek", "dayName", "workoutName", "exercises"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Daily gym attendance mark",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "description": "Date formatted as YYYY-MM-DD" },
+        "attended": { "type": "boolean", "description": "Attendance status" },
+        "workoutName": { "type": "string", "description": "Optional workout completed" },
+        "durationMinutes": { "type": "number", "description": "Duration in minutes" },
+        "timestamp": { "type": "string", "description": "ISO timestamp" },
+        "notes": { "type": "string", "description": "Notes" }
+      },
+      "required": ["date", "attended", "timestamp"]
+    },
+    "Meal": {
+      "title": "Meal",
+      "description": "Daily logged meal with macros",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Meal ID" },
+        "date": { "type": "string", "description": "Date formatted as YYYY-MM-DD" },
+        "type": { "type": "string", "enum": ["desayuno", "almuerzo", "cena", "snack"], "description": "Meal category" },
+        "name": { "type": "string", "description": "Meal name" },
+        "calories": { "type": "number", "description": "Calories in kcal" },
+        "protein": { "type": "number", "description": "Protein in grams" },
+        "carbs": { "type": "number", "description": "Carbohydrates in grams" },
+        "fat": { "type": "number", "description": "Fat in grams" },
+        "photoUrl": { "type": "string", "description": "Optional photo URL" },
+        "time": { "type": "string", "description": "Time logged" }
+      },
+      "required": ["id", "date", "type", "name", "calories", "protein", "carbs", "fat", "time"]
+    },
+    "Progress": {
+      "title": "Progress",
+      "description": "Body measurement and weight log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Measurement entry ID" },
+        "date": { "type": "string", "description": "Date formatted as YYYY-MM-DD" },
+        "weightKg": { "type": "number", "description": "Weight in kg" },
+        "muscleMassKg": { "type": "number", "description": "Muscle mass in kg" },
+        "bodyFatPercent": { "type": "number", "description": "Body fat percentage" },
+        "chestCm": { "type": "number", "description": "Chest measurement in cm" },
+        "waistCm": { "type": "number", "description": "Waist measurement in cm" },
+        "armsCm": { "type": "number", "description": "Arms measurement in cm" },
+        "thighsCm": { "type": "number", "description": "Thighs measurement in cm" },
+        "hipsCm": { "type": "number", "description": "Hips measurement in cm" },
+        "notes": { "type": "string", "description": "Notes" }
+      },
+      "required": ["id", "date", "weightKg"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User account document containing subscription and trial info"
+    },
+    "/users/{userId}/workouts/{workoutId}": {
+      "schema": "Workout",
+      "description": "User specific routines and exercises"
+    },
+    "/users/{userId}/attendance/{attendanceId}": {
+      "schema": "Attendance",
+      "description": "User specific gym attendance marks"
+    },
+    "/users/{userId}/meals/{mealId}": {
+      "schema": "Meal",
+      "description": "User specific meals and nutrition logs"
+    },
+    "/users/{userId}/progress/{progressId}": {
+      "schema": "Progress",
+      "description": "User specific body progress and weight records"
     }
   }
 }
